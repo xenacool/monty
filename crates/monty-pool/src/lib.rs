@@ -38,6 +38,13 @@ pub enum MontyTransport {
     /// session id in the path (`/<uuid>/parent`), the caller is responsible for
     /// putting it there. Takes full `ws://`/`wss://` URL to dial.
     Websocket(String),
+    /// Run each worker on a thread of this process, talking the same framed
+    /// protocol over in-memory channels. No binary or process spawn is needed,
+    /// but a worker crash (stack overflow, abort) takes the host down, and a
+    /// hung worker thread cannot be killed — it is abandoned and replaced.
+    /// The per-worker hard memory limit is not enforced.
+    #[cfg(feature = "in-process")]
+    InProcess,
 }
 
 impl MontyTransport {
@@ -124,7 +131,14 @@ impl PoolConfig {
         config
     }
 
-    /// Shared constructor for both transports.
+    /// Creates an in-process (thread) transport config with the same defaults
+    /// as [`Self::subprocess`].
+    #[cfg(feature = "in-process")]
+    pub fn in_process() -> Self {
+        Self::with_transport(MontyTransport::InProcess)
+    }
+
+    /// Shared constructor for all transports.
     fn with_transport(transport: MontyTransport) -> Self {
         Self {
             min_processes: 1,

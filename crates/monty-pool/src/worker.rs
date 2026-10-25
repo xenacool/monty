@@ -83,6 +83,60 @@ pub(crate) struct Worker {
 enum WorkerKind {
     Subprocess(Box<SubprocessWorker>),
     WebSocket(Box<WebSocketWorker>),
+    #[cfg(feature = "in-process")]
+    Thread(Box<ThreadWorker>),
+}
+
+/// A worker hosted on a thread of this process. Requests cross as framed byte
+/// vectors on a std channel; events return as frame bodies on a tokio channel,
+/// whose `recv` is cancel-safe, so no partial-frame state is needed.
+#[cfg(feature = "in-process")]
+struct ThreadWorker {
+    /// `None` after teardown; dropping it ends the worker thread's loop.
+    requests: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    events: mpsc::UnboundedReceiver<Vec<u8>>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+/// Native stack for a worker thread (the same budget as the subprocess child).
+#[cfg(feature = "in-process")]
+const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+/// Forwards the child's events to the pool as frame bodies.
+#[cfg(feature = "in-process")]
+struct ThreadSink(mpsc::UnboundedSender<Vec<u8>>);
+
+#[cfg(feature = "in-process")]
+impl monty_proto::worker::EventSink for ThreadSink {
+    fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
+        let body = encode_to_capped_vec(event)?;
+        self.0.send(body).map_err(|_| FrameError::Truncated)
+    }
+}
+
+/// The worker thread's loop: one request frame in, its events out, until the
+/// pool drops its sender, a `Shutdown`, or a fatal error. A panic is reported
+/// as a `FatalError` event rather than unwinding into the host.
+#[cfg(feature = "in-process")]
+fn serve_in_process(requests: std::sync::mpsc::Receiver<Vec<u8>>, events: mpsc::UnboundedSender<Vec<u8>>) {
+    use monty_proto::worker::{Child, EventSink, HandleOutcome, dispatch_into, fatal_error_event};
+    let mut child = Child::default();
+    let mut sink = ThreadSink(events);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        while let Ok(frame) = requests.recv() {
+            if dispatch_into(&mut child, &frame, &mut sink) != HandleOutcome::Continue {
+                break;
+            }
+        }
+    }));
+    if let Err(payload) = result {
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        let _ = sink.send(&fatal_error_event(&format!("child panicked: {message}")));
+    }
 }
 
 /// A local `monty subprocess` child: the process handle (kill-on-drop), its
@@ -154,6 +208,8 @@ impl Worker {
     pub(crate) async fn new(config: &PoolConfig, connect_headers: &[(String, String)]) -> Result<Self, PoolError> {
         let worker = match &config.transport {
             MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
+            #[cfg(feature = "in-process")]
+            MontyTransport::InProcess => Self::in_process(),
             // Bound the dial by `request_timeout` (see `websocket`); a missing
             // one falls back to a generous fixed budget.
             MontyTransport::Websocket(url) => {
@@ -281,6 +337,31 @@ impl Worker {
         })
     }
 
+    /// Starts a worker thread hosting a protocol child in this process.
+    #[cfg(feature = "in-process")]
+    fn in_process() -> Result<Self, PoolError> {
+        let (request_tx, request_rx) = std::sync::mpsc::channel();
+        let (event_tx, events) = mpsc::unbounded_channel();
+        let thread = std::thread::Builder::new()
+            .name("monty-worker".to_owned())
+            .stack_size(WORKER_STACK_SIZE)
+            .spawn(move || serve_in_process(request_rx, event_tx))
+            .map_err(|err| PoolError::Spawn(format!("in-process worker thread: {err}")))?;
+        Ok(Self {
+            id: 0,
+            kind: WorkerKind::Thread(Box::new(ThreadWorker {
+                requests: Some(request_tx),
+                events,
+                thread,
+            })),
+            checkouts_served: 0,
+            #[cfg(feature = "telemetry")]
+            recorder: None,
+            #[cfg(feature = "telemetry")]
+            metrics: None,
+        })
+    }
+
     #[cfg(feature = "telemetry")]
     pub(crate) fn callback_context(&self) -> opentelemetry::Context {
         self.recorder
@@ -308,6 +389,16 @@ impl Worker {
                     w.send_buf = Vec::with_capacity(SEND_BUF_CAPACITY);
                 }
                 Ok(len)
+            }
+            #[cfg(feature = "in-process")]
+            WorkerKind::Thread(w) => {
+                let mut frame = Vec::new();
+                encode_framed_into(request, &mut frame)?;
+                let len = frame.len() - 4;
+                match &w.requests {
+                    Some(requests) => requests.send(frame).map(|()| len).map_err(|_| FrameError::Truncated),
+                    None => Err(FrameError::Truncated),
+                }
             }
             WorkerKind::WebSocket(w) => {
                 let body = encode_to_capped_vec(request)?;
@@ -376,6 +467,11 @@ impl Worker {
                 Some(framed) => Ok(framed),
                 None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
             },
+            #[cfg(feature = "in-process")]
+            WorkerKind::Thread(w) => match w.events.recv().await {
+                Some(body) => decode_event(&body).map(|event| (event, body.len())),
+                None => Err(FrameError::Truncated),
+            },
             WorkerKind::WebSocket(w) => {
                 // frames come from the reader task; a channel recv is
                 // cancel-safe, preserving the deadline race. A torn-down worker
@@ -412,6 +508,8 @@ impl Worker {
         match &self.kind {
             WorkerKind::Subprocess(w) => w.child.id(),
             WorkerKind::WebSocket(_) => None,
+            #[cfg(feature = "in-process")]
+            WorkerKind::Thread(_) => None,
         }
     }
 
@@ -422,6 +520,8 @@ impl Worker {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),
             WorkerKind::WebSocket(_) => false,
+            #[cfg(feature = "in-process")]
+            WorkerKind::Thread(w) => w.thread.is_finished(),
         }
     }
 
@@ -451,6 +551,14 @@ impl Worker {
             }
             WorkerKind::WebSocket(w) => {
                 w.close().await;
+                None
+            }
+            // a thread cannot be force-killed: closing both channels ends it at
+            // its next request boundary, and a hung one is abandoned
+            #[cfg(feature = "in-process")]
+            WorkerKind::Thread(w) => {
+                w.requests = None;
+                w.events.close();
                 None
             }
         }

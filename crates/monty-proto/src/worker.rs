@@ -125,8 +125,9 @@ pub fn dispatch_frame(child: &mut Child, request_frame: &[u8]) -> (Vec<u8>, Hand
 
 /// Decodes and handles one request frame, sending all resulting frames to
 /// `sink`. Factored out of [`dispatch_frame`] so the framing/recovery decisions
-/// stay separate from buffer ownership.
-fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSink) -> HandleOutcome {
+/// stay separate from buffer ownership. Public so in-process hosts can stream
+/// events through their own sink.
+pub fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut impl EventSink) -> HandleOutcome {
     let mut reader = FrameReader::new(request_frame);
     match reader.read::<pb::ParentRequest>() {
         Ok(Some(request)) => match child.handle(request, sink) {

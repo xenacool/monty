@@ -16,6 +16,9 @@ repository = { workspace = true }
 name = "monty_pool"
 
 [features]
+# Hosts workers on threads inside this process instead of subprocesses (for
+# platforms that cannot spawn processes, such as iOS and Android apps).
+in-process = ["monty-proto/worker"]
 telemetry = [
     "dep:logfire",
     "dep:num-traits",
