@@ -517,7 +517,7 @@ class AbstractOS(ABC):
         Raises:
             FileNotFoundError: If the directory does not exist.
             NotADirectoryError: If the path is not a directory.
-            OSError: If the directory is not empty.
+            OSError: If the directory is not empty or is an unremovable filesystem root.
         """
         raise NotImplementedError
 
@@ -1184,19 +1184,16 @@ class OSAccess(AbstractOS):
         return len(data)
 
     def _append(self, path: PurePosixPath, data: bytes | str) -> None:
+        """Append without decoding stored bytes; preserve text storage for text-only writes."""
         entry = self._get_entry(path)
         if _is_file(entry):
             content = entry.read_content()
-            if isinstance(data, str):
-                # path_append_text: write back str so a text-backed file
-                # stays text-backed. Bytes-backed files are decoded first
-                # so the storage type tracks the most recent write rather
-                # than silently converting all writes to bytes.
-                text_content = content if isinstance(content, str) else content.decode()
-                entry.write_content(text_content + data)
+            if isinstance(content, str) and isinstance(data, str):
+                entry.write_content(content + data)
             else:
                 bytes_content = content if isinstance(content, bytes) else content.encode()
-                entry.write_content(bytes_content + data)
+                bytes_data = data if isinstance(data, bytes) else data.encode()
+                entry.write_content(bytes_content + bytes_data)
         elif _is_dir(entry):
             raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
         else:
@@ -1256,6 +1253,8 @@ class OSAccess(AbstractOS):
 
     def path_rmdir(self, path: PurePosixPath) -> None:
         dir = self._get_dir(path)
+        if not path.name:
+            raise OSError(f'[Errno 16] Device or resource busy: {str(path)!r}')
         if dir:
             raise OSError(f'[Errno 39] Directory not empty: {str(path)!r}')
         # remove from parent

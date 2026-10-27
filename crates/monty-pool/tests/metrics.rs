@@ -7,9 +7,11 @@
 
 #![cfg(feature = "telemetry")]
 
+mod common;
+
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     future::ready,
     path::{Path, PathBuf},
     process::Command,
@@ -39,6 +41,9 @@ use opentelemetry_sdk::{
     trace::SpanData,
 };
 use prost::Message;
+use tokio::time::{Instant, sleep};
+
+use crate::common::wait_for_idle;
 
 /// A cumulative aggregate exported from a test Logfire provider.
 struct Capture {
@@ -336,13 +341,112 @@ async fn saturation_and_abandonment_are_recorded() {
     assert!(matches!(blocked, Some(PoolError::Exhausted)), "{blocked:?}");
     capture.last("monty.pool.checkout.wait", "outcome", "exhausted");
 
-    // dropping without `finish` kills the worker: the session ended, and the
-    // worker left the pool
+    // dropping without `finish` kills the worker: the session ended, the
+    // worker left the pool, and a refill replaced it
     drop(held);
     capture.last("monty.pool.session.duration", "outcome", "abandoned");
     capture.last("monty.pool.worker.terminated", "reason", "abandoned");
-    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    wait_for_idle(&pool, 1).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
+}
+
+/// A worker recycled after its checkout is replaced in the background, so the
+/// next checkout is served warm rather than spawning on its path.
+#[tokio::test]
+async fn checkout_after_recycle_is_warm() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    pool.checkout(&ReplConfig::default())
+        .await
+        .expect("checkout")
+        .finish()
+        .await
+        .expect("finish");
+    capture.last("monty.pool.worker.terminated", "reason", "recycled");
+    wait_for_idle(&pool, 1).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let spawned = capture
+        .named("monty.pool.checkout.wait")
+        .into_iter()
+        .any(|recorded| recorded.attributes.get("outcome").is_some_and(|o| o == "spawned"));
+    assert!(!spawned, "no checkout should have spawned its worker");
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+    drop(checkout);
+}
+
+/// A refill that cannot spawn backs off rather than retrying in a tight loop,
+/// while a checkout still surfaces the spawn error, and refilling resumes once
+/// the binary is back. Unix-only: Windows cannot delete a running executable.
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_refills_back_off() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let binary = dir.path().join(format!("monty{}", env::consts::EXE_SUFFIX));
+    fs::copy(monty_binary(), &binary).expect("copy monty");
+    let mut config = PoolConfig::subprocess(&binary);
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    fs::remove_file(&binary).expect("remove monty");
+    checkout.finish().await.expect("finish");
+    wait_until("two failed refills", || terminations(&capture, "refill_failed") >= 2).await;
+    // the next delays are at least 200 ms and 400 ms, so a second allows two more
+    sleep(Duration::from_secs(1)).await;
+    let failures = terminations(&capture, "refill_failed");
+    assert!(failures <= 5, "expected backed-off refills, got {failures}");
+    let err = pool.checkout(&ReplConfig::default()).await.err();
+    assert!(matches!(err, Some(PoolError::Spawn(_))), "{err:?}");
+
+    fs::copy(monty_binary(), &binary).expect("restore monty");
+    wait_for_idle(&pool, 1).await;
+}
+
+/// The refill a recycle starts is killed by `close`, whether it lands before or after it.
+#[tokio::test]
+async fn close_stops_refilling() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    // the termination is counted just before the live gauge drops
+    wait_until("the refill to be closed", || {
+        terminations(&capture, "closed") == 1 && capture.total("monty.pool.workers.live") == 0
+    })
+    .await;
+    assert_eq!(pool.idle_workers(), 0);
+}
+
+/// How many workers have terminated with `reason`.
+fn terminations(capture: &Capture, reason: &str) -> u64 {
+    capture
+        .named("monty.pool.worker.terminated")
+        .into_iter()
+        .rfind(|recorded| recorded.attributes.get("reason").is_some_and(|found| found == reason))
+        .map_or(0, |recorded| match recorded.value {
+            Value::U64(count) => count,
+            other => panic!("expected a counter, got {other:?}"),
+        })
+}
+
+/// Polls `done` until it holds, panicking after a few seconds: background refills land asynchronously.
+async fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// A worker that dies during a turn: the teardown path counts its termination
@@ -376,8 +480,9 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     capture.last("monty.pool.worker.terminated", "reason", "crash");
     assert_eq!(capture.named("monty.pool.session.duration").len(), 1);
     capture.last("monty.pool.session.duration", "outcome", "error");
-    assert_eq!(capture.total("monty.pool.workers.live"), 0);
-    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+    wait_for_idle(&pool, 1).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
 }
 
 /// A pool dropped without `close` — a supported shutdown — still counts its

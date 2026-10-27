@@ -1478,6 +1478,63 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::csv_error("unknown dialect")
     }
 
+    /// A trapped `decimal` signal: the class plus C `_decimal`'s list of conditions,
+    /// `[<class 'decimal.DivisionByZero'>]`.
+    fn decimal_signal(exc_type: ExcType, message: String) -> RunError {
+        SimpleException::new_msg(exc_type, message).into()
+    }
+
+    /// The `TypeError` for an operand a `decimal` method cannot convert implicitly.
+    fn decimal_conversion(type_name: &str) -> RunError {
+        Self::type_error(format!("conversion from {type_name} to Decimal is not supported"))
+    }
+
+    /// The `TypeError` for a `context` argument that is not a `decimal.Context`.
+    fn decimal_optional_context() -> RunError {
+        Self::type_error("optional argument must be a context")
+    }
+
+    /// The `TypeError` for a rounding mode that is not one of the eight `ROUND_*` strings.
+    fn decimal_invalid_rounding() -> RunError {
+        Self::type_error(
+            "valid values for rounding are:\n  [ROUND_CEILING, ROUND_FLOOR, ROUND_UP, ROUND_DOWN,\n   \
+             ROUND_HALF_UP, ROUND_HALF_DOWN, ROUND_HALF_EVEN,\n   ROUND_05UP]",
+        )
+    }
+
+    /// The `KeyError` for a `flags` / `traps` key that is not one of the nine signals.
+    fn decimal_invalid_signal() -> RunError {
+        SimpleException::new_msg(
+            ExcType::KeyError,
+            "valid values for signals are:\n  [InvalidOperation, FloatOperation, DivisionByZero,\n   \
+             Overflow, Underflow, Subnormal, Inexact, Rounded,\n   Clamped]",
+        )
+        .into()
+    }
+
+    /// The `KeyError` for a dict assigned to `flags` / `traps` without exactly the nine signals.
+    fn decimal_invalid_signal_dict() -> RunError {
+        SimpleException::new_msg(ExcType::KeyError, "invalid signal dict").into()
+    }
+
+    /// Unpacking a sequence of the wrong length: `not enough values to unpack
+    /// (expected 2, got 1)` or `too many values to unpack (expected 2, got 3)`.
+    fn unpack_size_error(expected: usize, actual: usize) -> RunError {
+        let message = if actual < expected {
+            format!("not enough values to unpack (expected {expected}, got {actual})")
+        } else {
+            format!("too many values to unpack (expected {expected}, got {actual})")
+        };
+        SimpleException::new_msg(ExcType::ValueError, message).into()
+    }
+
+    /// C's `PyArg_ParseTuple` arity error for a fixed-arity method: `function takes
+    /// exactly 2 arguments (1 given)`.
+    fn type_error_function_exact(expected: usize, actual: usize) -> RunError {
+        let plural = if expected == 1 { "argument" } else { "arguments" };
+        Self::type_error(format!("function takes exactly {expected} {plural} ({actual} given)"))
+    }
+
     /// Creates an IndexError for list index out of range (getitem).
     ///
     /// Matches CPython's format: `IndexError('list index out of range')`

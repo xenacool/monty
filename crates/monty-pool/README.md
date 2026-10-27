@@ -16,6 +16,9 @@ This is the recommended way to run Monty from Rust. It is also the engine undern
 ## Model
 
 A `Pool` keeps an elastic set of workers (`min_processes` prewarmed, up to `max_processes`).
+Until it is closed, a subprocess pool replaces any worker that is recycled, crashes or is
+discarded in the background until `min_processes` workers are live again; a replacement that
+fails to spawn is retried with a doubling backoff. WebSocket pools never refill.
 `Pool::checkout` dedicates one worker to one REPL session: the caller feeds snippets of code
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
@@ -104,7 +107,9 @@ Invalid snapshots have no correctness or availability guarantees.
   worker as untrusted: wire decoding validates everything and never panics, and a worker
   that violates the protocol is discarded.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
-  the impact of any slow leak.
+  the impact of any slow leak. With the subprocess transport, `Some(1)` runs every session in
+  a fresh process, which with `min_processes > 0` the background refill has usually spawned
+  before the checkout asks.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with

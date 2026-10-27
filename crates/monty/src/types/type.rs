@@ -21,7 +21,7 @@ use crate::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
         Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
-        complex, date, datetime,
+        complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
@@ -40,6 +40,9 @@ use crate::{
 /// Some variants are Python builtins accessible by name (e.g., `int`, `list`),
 /// while others are internal types only available through imports or introspection
 /// (e.g., `TextIOWrapper`, `PosixPath`).
+///
+/// Variant names are persisted in dumps; renames require a serde alias.
+/// Variant order is also used by builtin id() through postcard.
 #[derive(
     Debug,
     Clone,
@@ -120,11 +123,12 @@ pub enum Type {
     /// reference — `Type` is `Copy`, untracked by refcounting, and has no
     /// `Drop`. A `Type::Instance` is only valid while the value it was derived
     /// from is alive (an instance holds a counted ref to its class, taken in
-    /// `VM::instantiate_class`). It must NEVER be stored long-lived,
+    /// `VM::instantiate_class` or `allocate_empty_like`). It must NEVER be stored long-lived,
     /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
     /// `type()` builtin returns the class object itself for instances), or
     /// converted to `MontyType`, which has no class variant (a sandbox class
     /// crosses the boundary as its own `ClassType` arena node).
+    /// `Builtins::Type` now accepts only `BuiltinType`, preventing storage there at compile time.
     #[strum(disabled)]
     Instance(HeapId),
     /// Exception types render/parse via `ExcType`'s own strum name
@@ -325,11 +329,24 @@ pub enum Type {
     /// A resolved `csv` dialect, CPython's `_csv.Dialect`.
     #[strum(serialize = "_csv.Dialect")]
     CsvDialect,
+    /// `decimal.Decimal`.
+    #[strum(serialize = "decimal.Decimal")]
+    Decimal,
+    /// `decimal.Context`.
+    #[strum(serialize = "decimal.Context")]
+    DecimalContext,
+    /// The type of a context's `flags` / `traps`; CPython defines it in Python, so
+    /// its name carries no module.
+    #[strum(serialize = "SignalDict")]
+    DecimalSignalDict,
+    /// The manager `decimal.localcontext()` returns.
+    #[strum(serialize = "decimal.ContextManager")]
+    DecimalContextManager,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
-/// variant — the single name table backing [`Type::name`] and `MontyType`'s
-/// `Display`.
+/// variant, using the same name table as [`Type::name`].
+/// `MontyType` has its own strum-derived name table in `monty-types`.
 ///
 /// The names live on the enum via the `IntoStaticStr` derive
 /// (`serialize_all = "lowercase"` plus per-variant `serialize` overrides);
@@ -339,10 +356,9 @@ pub enum Type {
 /// On `Instance`, which has no static name — callers with heap access must
 /// resolve the real class name via [`Type::name`]. Well-formed data never
 /// puts an `Instance` where no heap exists (`Builtins::Type`, `MontyObject`,
-/// the wire protocol), so this is a programmer-error tripwire. A crafted
-/// snapshot payload *can* smuggle one in, but snapshot bytes are not a
-/// panic-free boundary anyway — any bogus `HeapId` in them panics on first
-/// heap access.
+/// the wire protocol), so this is a programmer-error tripwire.
+/// `BuiltinType` rejects `Instance` during snapshot deserialization, including
+/// for `Builtins::Type` and generic alias origins.
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match *self {
@@ -651,6 +667,12 @@ impl Type {
             (Self::Complex, Some(StaticStrings::FromNumber)) => {
                 complex::class_from_number(vm, args).map(CallResult::Value)
             }
+            (Self::Decimal, Some(StaticStrings::FromNumber)) => {
+                decimal::py::class_from_number(vm, args).map(CallResult::Value)
+            }
+            (Self::Decimal, _) if vm.interns.get_str(method_id) == "from_float" => {
+                decimal::py::class_from_float(vm, args).map(CallResult::Value)
+            }
             (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
@@ -678,7 +700,11 @@ impl Type {
             (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
                 let name = format!("{}.__class_getitem__", ty.dunder_name(vm.heap, vm.interns));
                 let key = args.get_one_arg(&name, vm.heap)?;
-                Ok(CallResult::Value(GenericAlias::subscript(ty, key, vm)))
+                Ok(CallResult::Value(GenericAlias::subscript(
+                    ty.try_into().expect("generic origins are builtin types"),
+                    key,
+                    vm,
+                )))
             }
             // The type's plain attributes (`list.__name__`); a missing name
             // raises the lookup's `type object 'list' has no attribute` error.
@@ -840,11 +866,12 @@ impl Type {
             Self::CsvDictReader => csv::dict_reader_init(vm, args),
             Self::CsvDictWriter => csv::dict_writer_init(vm, args),
             Self::CsvDialect => csv::dialect_init(vm, args),
+            Self::Decimal => decimal::py::init(vm, args),
+            Self::DecimalContext => decimal::py_context::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),
             Self::Float => {
-                let interns = vm.interns;
                 let Some(v) = args.get_zero_one_arg("float", vm.heap)? else {
                     return Ok(Value::Float(0.0));
                 };
@@ -852,13 +879,9 @@ impl Type {
                 if let Some(value) = v.py_float(vm)? {
                     Ok(Value::Float(value))
                 } else {
-                    match v {
-                        Value::InternString(string_id) => {
-                            Ok(Value::Float(parse_f64_from_str(interns.get_str(*string_id))?))
-                        }
-                        Value::Ref(heap_id) if let HeapData::Str(s) = vm.heap.get(*heap_id) => {
-                            Ok(Value::Float(parse_f64_from_str(s.as_str())?))
-                        }
+                    match v.py_value(vm) {
+                        PyValue::Str(value) => Ok(Value::Float(parse_f64_from_str(value.as_str(vm))?)),
+                        PyValue::Bytes(value) => Ok(Value::Float(parse_f64_from_bytes(value.as_slice(vm))?)),
                         _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                     }
                 }
@@ -893,13 +916,27 @@ impl Type {
 /// - The special values `inf`, `-inf`, `infinity`, and `nan` (case-insensitive)
 /// - Underscore digit separators, strictly between two digits (`1_000.5`, `1e1_0`)
 pub(crate) fn parse_f64_from_str(value: &str) -> RunResult<f64> {
+    parse_f64(value).ok_or_else(|| value_error_could_not_convert_string_to_float(StringRepr(value)))
+}
+
+/// Parses ASCII bytes without accepting Unicode digits or whitespace encoded as UTF-8.
+fn parse_f64_from_bytes(value: &[u8]) -> RunResult<f64> {
+    str::from_utf8(value)
+        .ok()
+        .filter(|text| text.is_ascii())
+        .and_then(parse_f64)
+        .ok_or_else(|| value_error_could_not_convert_string_to_float(bytes_repr(value)))
+}
+
+/// Parses shared float syntax without constructing the caller-specific error.
+fn parse_f64(value: &str) -> Option<f64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(value_error_could_not_convert_string_to_float(value));
+        return None;
     }
     let stripped;
     let trimmed = if trimmed.contains('_') {
-        stripped = strip_underscores(trimmed).ok_or_else(|| value_error_could_not_convert_string_to_float(value))?;
+        stripped = strip_underscores(trimmed)?;
         stripped.as_str()
     } else {
         trimmed
@@ -911,12 +948,10 @@ pub(crate) fn parse_f64_from_str(value: &str) -> RunResult<f64> {
         "-inf" | "-infinity" => f64::NEG_INFINITY,
         "nan" | "+nan" => f64::NAN,
         "-nan" => -f64::NAN,
-        _ => trimmed
-            .parse::<f64>()
-            .map_err(|_| value_error_could_not_convert_string_to_float(value))?,
+        _ => trimmed.parse::<f64>().ok()?,
     };
 
-    Ok(parsed)
+    Some(parsed)
 }
 
 /// Removes digit-separator underscores, or returns `None` when one is not
@@ -938,13 +973,11 @@ pub(crate) fn strip_underscores(text: &str) -> Option<String> {
     Some(out)
 }
 
-/// Creates the `ValueError` raised by `float()` when a string cannot be parsed.
-///
-/// Matches CPython's message format: `could not convert string to float: '...'`.
-fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
+/// Creates a `float()` ValueError using the original str/bytes argument's Python representation.
+fn value_error_could_not_convert_string_to_float(value: impl fmt::Display) -> RunError {
     SimpleException::new_msg(
         ExcType::ValueError,
-        format!("could not convert string to float: {}", StringRepr(value)),
+        format!("could not convert string to float: {value}"),
     )
     .into()
 }

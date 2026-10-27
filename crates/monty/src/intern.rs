@@ -124,9 +124,13 @@ pub(crate) static RESERVED_STRS: [&str; 129] = const {
 /// touch the same line; nothing reads those discriminants. Interner entries
 /// serialize as text and recover a tag only when the loading build recognizes
 /// that text, so reordering them does not invalidate a dump.
+///
+/// `use_phf` makes the derived `FromStr` (run for every string interned, compiled
+/// or loaded from a dump) a compile-time perfect-hash lookup. strum's default is
+/// a `match` that LLVM turns into a chain of comparisons per text length.
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
-#[strum(serialize_all = "snake_case")]
+#[strum(serialize_all = "snake_case", use_phf)]
 pub enum StaticStrings {
     /// ASCII character 0x00.
     #[strum(serialize = "\x00")]
@@ -665,6 +669,9 @@ pub enum StaticStrings {
     BasePrefix,
     /// `os.path.basename()` function.
     Basename,
+    /// `decimal.BasicContext` template context.
+    #[strum(serialize = "BasicContext")]
+    BasicContext,
     /// `itertools.batched()` function.
     Batched,
     /// `beta` parameter of `random.gammavariate()` and the other shape variates.
@@ -715,6 +722,8 @@ pub enum StaticStrings {
     Callable,
     /// `capitalize()` method, shared by `str` and `bytes`.
     Capitalize,
+    /// Kwarg name `capitals` — `decimal.Context()`.
+    Capitals,
     /// Kwarg name `case_sensitive` — `Path.glob(case_sensitive=...)`.
     CaseSensitive,
     /// `str.casefold()` method.
@@ -735,6 +744,11 @@ pub enum StaticStrings {
     Choice,
     /// `random.choices()` function.
     Choices,
+    /// Kwarg name `clamp` — `decimal.Context()`.
+    Clamp,
+    /// `decimal.Clamped` signal.
+    #[strum(serialize = "Clamped")]
+    Clamped,
     /// `__class_getitem__`, the classmethod behind `list[int]`.
     #[strum(serialize = "__class_getitem__")]
     ClassGetitem,
@@ -781,6 +795,14 @@ pub enum StaticStrings {
     Compress,
     /// `complex.conjugate()` method.
     Conjugate,
+    /// Kwarg name `context` — the `decimal` methods.
+    Context,
+    /// `decimal.Context` class.
+    #[strum(serialize = "Context")]
+    ContextType,
+    /// `decimal.ConversionSyntax` condition.
+    #[strum(serialize = "ConversionSyntax")]
+    ConversionSyntax,
     /// `copy()` method, shared by `list`, `dict` and `set`; also the `copy` module and `copy.copy()`.
     Copy,
     /// `sys.copyright` attribute.
@@ -811,6 +833,8 @@ pub enum StaticStrings {
     Csv,
     /// `time.ctime()` function.
     Ctime,
+    /// Kwarg name `ctx` — `decimal.localcontext()`.
+    Ctx,
     /// `cum_weights` parameter of `random.choices()`.
     CumWeights,
     /// `os.curdir` constant name.
@@ -849,6 +873,18 @@ pub enum StaticStrings {
     Days,
     /// `sys.flags.debug` field.
     Debug,
+    /// `decimal.DecimalException` exception class.
+    #[strum(serialize = "DecimalException")]
+    DecimalException,
+    /// Module name for `import decimal`.
+    #[strum(serialize = "decimal")]
+    DecimalMod,
+    /// `decimal.DecimalTuple`, the named tuple `Decimal.as_tuple()` returns.
+    #[strum(serialize = "DecimalTuple")]
+    DecimalTuple,
+    /// `decimal.Decimal` class.
+    #[strum(serialize = "Decimal")]
+    DecimalType,
     /// `bytes.decode()` method.
     Decode,
     /// `base64.decodebytes()` function.
@@ -858,6 +894,9 @@ pub enum StaticStrings {
     Deepcopy,
     /// Kwarg name `default` — `os.getenv(default=...)`.
     Default,
+    /// `decimal.DefaultContext` template context.
+    #[strum(serialize = "DefaultContext")]
+    DefaultContext,
     /// `defaultdict.default_factory` attribute.
     #[strum(serialize = "default_factory")]
     DefaultFactory,
@@ -909,6 +948,8 @@ pub enum StaticStrings {
     Digest,
     /// `digest_size` attribute of a hash object, and the `blake2b()` parameter.
     DigestSize,
+    /// `DecimalTuple.digits` field.
+    Digits,
     /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
     DirFd,
     /// `os.path.dirname()` function.
@@ -919,6 +960,15 @@ pub enum StaticStrings {
     Discard,
     /// `math.dist()` function.
     Dist,
+    /// `decimal.DivisionByZero` signal.
+    #[strum(serialize = "DivisionByZero")]
+    DivisionByZero,
+    /// `decimal.DivisionImpossible` condition.
+    #[strum(serialize = "DivisionImpossible")]
+    DivisionImpossible,
+    /// `decimal.DivisionUndefined` condition.
+    #[strum(serialize = "DivisionUndefined")]
+    DivisionUndefined,
     /// `dklen` parameter of `hashlib.pbkdf2_hmac()`.
     Dklen,
     /// `field(doc=...)`, CPython's per-field docstring.
@@ -962,6 +1012,9 @@ pub enum StaticStrings {
     /// `__init__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__init__")]
     DunderInit,
+    /// `decimal.__libmpdec_version__` attribute.
+    #[strum(serialize = "__libmpdec_version__")]
+    DunderLibmpdecVersion,
     /// `__main__`, the `__name__` of the module being run.
     #[strum(serialize = "__main__")]
     DunderMain,
@@ -989,6 +1042,9 @@ pub enum StaticStrings {
     /// `__setattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__setattr__")]
     DunderSetattr,
+    /// `decimal.__version__` attribute.
+    #[strum(serialize = "__version__")]
+    DunderVersion,
     /// The uncached callable.
     #[strum(serialize = "__wrapped__")]
     DunderWrapped,
@@ -997,6 +1053,12 @@ pub enum StaticStrings {
     /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+    /// Kwarg name `Emax` — `decimal.Context()`.
+    #[strum(serialize = "Emax")]
+    Emax,
+    /// Kwarg name `Emin` — `decimal.Context()`.
+    #[strum(serialize = "Emin")]
+    Emin,
     /// `gc.enable()` function.
     Enable,
     /// `str.encode()` method.
@@ -1066,10 +1128,15 @@ pub enum StaticStrings {
     Expandvars,
     /// `math.expm1()` function.
     Expm1,
+    /// `DecimalTuple.exponent` field.
+    Exponent,
     /// `random.expovariate()` function.
     Expovariate,
     /// `extend()` method, shared by `list` and `deque`.
     Extend,
+    /// `decimal.ExtendedContext` template context.
+    #[strum(serialize = "ExtendedContext")]
+    ExtendedContext,
     /// `deque.extendleft()` method.
     Extendleft,
     /// `extrasaction` parameter and attribute of `csv.DictWriter`.
@@ -1121,6 +1188,9 @@ pub enum StaticStrings {
     Flags,
     /// `sys.float_info` attribute.
     FloatInfo,
+    /// `decimal.FloatOperation` signal.
+    #[strum(serialize = "FloatOperation")]
+    FloatOperation,
     /// `sys.float_repr_style` attribute.
     FloatReprStyle,
     /// `math.floor()` function.
@@ -1200,6 +1270,8 @@ pub enum StaticStrings {
     GetDialect,
     /// `os.path.getatime()` function.
     Getatime,
+    /// `decimal.getcontext()` function.
+    Getcontext,
     /// `os.path.getctime()` function.
     Getctime,
     /// `os.getcwd()` function.
@@ -1241,6 +1313,12 @@ pub enum StaticStrings {
     HashRandomization,
     /// Module name for `import hashlib`.
     Hashlib,
+    /// `decimal.HAVE_CONTEXTVAR` constant.
+    #[strum(serialize = "HAVE_CONTEXTVAR")]
+    HaveContextvar,
+    /// `decimal.HAVE_THREADS` constant.
+    #[strum(serialize = "HAVE_THREADS")]
+    HaveThreads,
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
@@ -1268,6 +1346,12 @@ pub enum StaticStrings {
     Hours,
     /// `math.hypot()` function.
     Hypot,
+    /// `decimal.IEEEContext()` function.
+    #[strum(serialize = "IEEEContext")]
+    IeeeContext,
+    /// `decimal.IEEE_CONTEXT_MAX_BITS` constant.
+    #[strum(serialize = "IEEE_CONTEXT_MAX_BITS")]
+    IeeeContextMaxBits,
     /// `sys.flags.ignore_environment` field.
     IgnoreEnvironment,
     /// `re.IGNORECASE` flag
@@ -1285,6 +1369,9 @@ pub enum StaticStrings {
     Indent,
     /// `index()` method, shared by `str`, `bytes`, `list`, `tuple` and `deque`.
     Index,
+    /// `decimal.Inexact` signal.
+    #[strum(serialize = "Inexact")]
+    Inexact,
     /// `@dataclass(init=...)`.
     Init,
     /// `initial` keyword argument of `functools.reduce()` and
@@ -1308,6 +1395,12 @@ pub enum StaticStrings {
     Interactive,
     /// `set.intersection()` method.
     Intersection,
+    /// `decimal.InvalidContext` condition.
+    #[strum(serialize = "InvalidContext")]
+    InvalidContext,
+    /// `decimal.InvalidOperation` signal.
+    #[strum(serialize = "InvalidOperation")]
+    InvalidOperation,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
     /// `dataclasses.is_dataclass()` function.
@@ -1472,6 +1565,8 @@ pub enum StaticStrings {
     Load,
     /// `json.loads()` and `tomllib.loads()` functions.
     Loads,
+    /// `decimal.localcontext()` function.
+    Localcontext,
     /// `locals` parameter of eval/exec.
     Locals,
     /// `time.localtime()` function.
@@ -1537,6 +1632,9 @@ pub enum StaticStrings {
     /// `blake2b.MAX_DIGEST_SIZE` class constant.
     #[strum(serialize = "MAX_DIGEST_SIZE")]
     MaxDigestSize,
+    /// `decimal.MAX_EMAX` constant.
+    #[strum(serialize = "MAX_EMAX")]
+    MaxEmax,
     /// `sys.float_info.max_exp` field.
     MaxExp,
     /// `blake2b.MAX_KEY_SIZE` class constant.
@@ -1545,6 +1643,9 @@ pub enum StaticStrings {
     /// `base64.MAXLINESIZE` module constant.
     #[strum(serialize = "MAXLINESIZE")]
     MaxLineSize,
+    /// `decimal.MAX_PREC` constant.
+    #[strum(serialize = "MAX_PREC")]
+    MaxPrec,
     /// `deque.maxlen` attribute (also a constructor keyword argument).
     Maxlen,
     /// `sys.maxsize` attribute.
@@ -1572,6 +1673,12 @@ pub enum StaticStrings {
     /// `sys.float_info.min_10_exp` field.
     #[strum(serialize = "min_10_exp")]
     Min10Exp,
+    /// `decimal.MIN_EMIN` constant.
+    #[strum(serialize = "MIN_EMIN")]
+    MinEmin,
+    /// `decimal.MIN_ETINY` constant.
+    #[strum(serialize = "MIN_ETINY")]
+    MinEtiny,
     /// `sys.float_info.min_exp` field.
     MinExp,
     /// `sys.version_info.minor` field.
@@ -1602,6 +1709,8 @@ pub enum StaticStrings {
     /// `namedtuple(..., module=...)` keyword argument.
     #[strum(serialize = "module")]
     ModuleKwarg,
+    /// Kwarg name `modulo` — `Context.power()`.
+    Modulo,
     /// `time.monotonic()` function.
     Monotonic,
     /// `time.monotonic_ns()` function.
@@ -1674,6 +1783,8 @@ pub enum StaticStrings {
     NotImplementedRepr,
     /// `datetime.now()` classmethod.
     Now,
+    /// Kwarg name `num` — `Context.create_decimal()`.
+    Num,
     /// Kwarg name `number` — `round(number=...)`.
     Number,
     /// Kwarg name `obj` — `json.dumps(obj=...)`.
@@ -1712,6 +1823,13 @@ pub enum StaticStrings {
     /// Named-tuple type name of the `os.stat()` result.
     #[strum(serialize = "StatResult")]
     OsStatResult,
+    /// Kwarg name `other` — the binary `Decimal` methods.
+    Other,
+    /// `decimal.Overflow` signal.
+    #[strum(serialize = "Overflow")]
+    Overflow,
+    /// Kwarg name `override` — `Decimal.__format__()`.
+    Override,
     /// `pad` parameter of `base64.b85encode()`.
     #[strum(serialize = "pad")]
     Pad,
@@ -1728,6 +1846,10 @@ pub enum StaticStrings {
     Parents,
     /// `random.paretovariate()` function.
     Paretovariate,
+    /// Kwarg name `parse_float` — `json.loads()`.
+    ParseFloat,
+    /// Kwarg name `parse_int` — `json.loads()`.
+    ParseInt,
     /// `functools.partial` type.
     Partial,
     /// `partition()` method, shared by `str` and `bytes`.
@@ -1794,6 +1916,8 @@ pub enum StaticStrings {
     PostInit,
     /// `math.pow()` function.
     Pow,
+    /// Kwarg name `prec` — `decimal.Context()`.
+    Prec,
     /// `sys.prefix` attribute.
     Prefix,
     /// `time.process_time()` function.
@@ -1931,6 +2055,35 @@ pub enum StaticStrings {
     Rmdir,
     /// `deque.rotate()` method.
     Rotate,
+    /// `decimal.ROUND_05UP` rounding mode.
+    #[strum(serialize = "ROUND_05UP")]
+    Round05up,
+    /// `decimal.ROUND_CEILING` rounding mode.
+    #[strum(serialize = "ROUND_CEILING")]
+    RoundCeiling,
+    /// `decimal.ROUND_DOWN` rounding mode.
+    #[strum(serialize = "ROUND_DOWN")]
+    RoundDown,
+    /// `decimal.ROUND_FLOOR` rounding mode.
+    #[strum(serialize = "ROUND_FLOOR")]
+    RoundFloor,
+    /// `decimal.ROUND_HALF_DOWN` rounding mode.
+    #[strum(serialize = "ROUND_HALF_DOWN")]
+    RoundHalfDown,
+    /// `decimal.ROUND_HALF_EVEN` rounding mode.
+    #[strum(serialize = "ROUND_HALF_EVEN")]
+    RoundHalfEven,
+    /// `decimal.ROUND_HALF_UP` rounding mode.
+    #[strum(serialize = "ROUND_HALF_UP")]
+    RoundHalfUp,
+    /// `decimal.ROUND_UP` rounding mode.
+    #[strum(serialize = "ROUND_UP")]
+    RoundUp,
+    /// `decimal.Rounded` signal.
+    #[strum(serialize = "Rounded")]
+    Rounded,
+    /// Kwarg name `rounding` — `Decimal.quantize()` and friends.
+    Rounding,
     /// `sys.float_info.rounds` field.
     Rounds,
     /// `rpartition()` method, shared by `str` and `bytes`.
@@ -1991,6 +2144,8 @@ pub enum StaticStrings {
     /// `typing.Set` marker.
     #[strum(serialize = "Set")]
     SetType,
+    /// `decimal.setcontext()` function.
+    Setcontext,
     /// `dict.setdefault()` method.
     Setdefault,
     /// `sys.setrecursionlimit()` function (only callable under `test-hooks`).
@@ -2031,6 +2186,8 @@ pub enum StaticStrings {
     Shuffle,
     /// `sigma` parameter of `random.gauss()` and the other normal variates.
     Sigma,
+    /// `DecimalTuple.sign` field.
+    Sign,
     /// `math.sin()` function.
     Sin,
     /// `math.sinh()` function.
@@ -2138,6 +2295,9 @@ pub enum StaticStrings {
     StructTime,
     /// `re.sub()` / `pattern.sub()` method
     Sub,
+    /// `decimal.Subnormal` signal.
+    #[strum(serialize = "Subnormal")]
+    Subnormal,
     /// `Counter.subtract()` method.
     Subtract,
     /// `Path.suffix` property.
@@ -2185,6 +2345,8 @@ pub enum StaticStrings {
     TeeType,
     /// `file.tell()` method.
     Tell,
+    /// Kwarg name `third` — `Decimal.fma()`.
+    Third,
     /// `time.thread_time()` function.
     ThreadTime,
     /// `time.thread_time_ns()` function.
@@ -2246,6 +2408,8 @@ pub enum StaticStrings {
     Total,
     /// `timedelta.total_seconds()` method.
     TotalSeconds,
+    /// Kwarg name `traps` — `decimal.Context()`.
+    Traps,
     /// `random.triangular()` function.
     Triangular,
     /// `repr()`/`str()` text of `True`, interned so rendering allocates nothing.
@@ -2295,6 +2459,9 @@ pub enum StaticStrings {
     /// `NamedTuple._replace(**kwargs)` method.
     #[strum(serialize = "_replace")]
     UnderReplace,
+    /// `decimal.Underflow` signal.
+    #[strum(serialize = "Underflow")]
+    Underflow,
     /// `binascii.unhexlify()` function.
     #[strum(serialize = "unhexlify")]
     Unhexlify,
@@ -2342,6 +2509,8 @@ pub enum StaticStrings {
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,
+    /// Kwarg name `value` — `decimal.Decimal()`.
+    Value,
     /// `dict.values()` method.
     Values,
     /// `sys.flags.verbose` field.

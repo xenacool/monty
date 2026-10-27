@@ -145,6 +145,8 @@ These raise `NameError`:
 - **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
     CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
     which Monty rejects with `invalid literal for int() with base 10`.
+- **`float(x)`** — string parsing accepts ASCII digits only; CPython also accepts Unicode decimal digits
+    (`float('١.٥')` == 1.5), which Monty rejects with `could not convert string to float`.
 - **`bytes(source)`** — an iterable of ints is not supported: CPython's
     `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert 'list' object to bytes`. The int /
     str-with-encoding / bytes source forms

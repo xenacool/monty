@@ -5,7 +5,7 @@
 //! the whole document first and hands it to the file object in one write
 //! (see [`FileTarget`]).
 
-use std::{cmp::Ordering, fmt::Write};
+use std::fmt::Write;
 
 use super::fp::FileTarget;
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead},
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
-    types::{Dict, PyTrait, str::allocate_string},
+    types::{Dict, PyTrait, Type, str::allocate_string},
     value::Value,
 };
 
@@ -402,14 +402,10 @@ fn parse_separators_value(value: &Value, vm: &VM<'_>) -> RunResult<Option<(Strin
 /// Raises `ValueError` with the same unpacking-style message as CPython when
 /// the length does not match the expected two elements.
 fn check_separators_length(len: usize) -> RunResult<()> {
-    match len.cmp(&2) {
-        Ordering::Greater => Err(ExcType::value_error(format!(
-            "too many values to unpack (expected 2, got {len})"
-        ))),
-        Ordering::Less => Err(ExcType::value_error(format!(
-            "not enough values to unpack (expected 2, got {len})"
-        ))),
-        Ordering::Equal => Ok(()),
+    if len == 2 {
+        Ok(())
+    } else {
+        Err(ExcType::unpack_size_error(2, len))
     }
 }
 
@@ -549,7 +545,17 @@ impl<'h> Encoder<'_, 'h> {
                 defer_drop!(token, this);
                 this.with_entered_container(dict.id(), |enc| enc.serialize_dict(entries, depth))
             }
-            _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
+            _ => {
+                // CPython names the class by `__name__`: `Decimal`, not `decimal.Decimal`.
+                // A user class's name is its `__name__` already, dots and all.
+                let type_name = value.py_type_name(self.vm);
+                let bare = if matches!(value.py_type(self.vm), Type::Instance(_)) {
+                    &*type_name
+                } else {
+                    type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare)
+                };
+                Err(ExcType::json_not_serializable_error(bare))
+            }
         }
     }
 

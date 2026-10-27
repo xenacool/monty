@@ -7,6 +7,11 @@
 //! and [`Dump::load`]; whether the session was idle or suspended is the
 //! [`Session`] discriminant, not a separate tag.
 //!
+//! Inline builtin types serialize through `Type`, preserving the names and payloads
+//! written before `BuiltinType` was split out. Its own enum order is not the wire
+//! order: postcard encoding for builtin `id()` retains `Type::Instance`'s slot.
+//! See `builtin_type_tests` in `types/builtin_type.rs` and the legacy serialization fixture.
+//!
 //! # Naming contract
 //!
 //! The payload is self-describing: structs are maps keyed by field name and
@@ -393,14 +398,14 @@ mod tests {
         );
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x482e_2879_5906_a694,
+            0x578d_38b1_7715_f9a1,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
         let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
         assert_eq!(
             variant_name_fingerprint(&monty_type_names),
-            0x83d0_7660_e7c8_86bd,
+            0xa95a_cc16_8f6c_5e31,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&monty_type_names))
         );

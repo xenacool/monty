@@ -25,7 +25,10 @@ use crate::{
     hash::HashValue,
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time, tuple::allocate_tuple},
+    types::{
+        BuiltinType, LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time,
+        tuple::allocate_tuple,
+    },
     value::{EitherStr, Value},
 };
 
@@ -38,7 +41,7 @@ use crate::{
 pub(crate) struct GenericAlias {
     /// The subscripted type, `list` in `list[int]`. Never a class object:
     /// only the builtin types in [`Type::has_class_getitem`] are subscriptable.
-    origin: Type,
+    origin: BuiltinType,
     /// The `__args__` tuple, always a `Value::Ref` to a `HeapData::Tuple`,
     /// shared with every read of that attribute.
     args: Value,
@@ -49,8 +52,8 @@ impl GenericAlias {
     ///
     /// `origin` must satisfy [`Type::has_class_getitem`]; callers raise the
     /// `type 'int' is not subscriptable` error for the rest.
-    pub(crate) fn subscript(origin: Type, key: Value, vm: &mut VM<'_>) -> Value {
-        debug_assert!(origin.has_class_getitem(), "{origin} is not a generic type");
+    pub(crate) fn subscript(origin: BuiltinType, key: Value, vm: &mut VM<'_>) -> Value {
+        debug_assert!(Type::from(origin).has_class_getitem(), "{origin} is not a generic type");
         // A tuple key is `__args__` itself, as in CPython, so `tuple[()]`
         // has empty args and `list[int, str]` two.
         let is_tuple = matches!(&key, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Tuple(_)));
@@ -69,7 +72,7 @@ impl GenericAlias {
     /// holds and `type[int](x)` reaches `type()`.
     pub(crate) fn origin_value(&self) -> Value {
         match self.origin {
-            Type::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+            BuiltinType::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
             origin => Value::Builtin(Builtins::Type(origin)),
         }
     }
@@ -98,7 +101,7 @@ impl HeapItem for GenericAlias {
 
 impl<'h> HeapObjectRead<'h, GenericAlias> {
     /// The origin type and an owned ref to the `__args__` tuple.
-    fn parts(&self, vm: &mut VM<'h>) -> (Type, Value) {
+    fn parts(&self, vm: &mut VM<'h>) -> (BuiltinType, Value) {
         let this = self.get(vm.heap);
         (this.origin, this.args.clone_with_heap(vm))
     }
@@ -155,7 +158,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             return Ok(None);
         };
         let mut hasher = AHasher::default();
-        origin.hash(&mut hasher);
+        // Dicts and sets persist hashes; retain Type's original discriminants.
+        Type::from(origin).hash(&mut hasher);
         args_hash.hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
@@ -175,7 +179,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             unreachable!("GenericAlias::args is always a tuple")
         };
 
-        write!(f, "{}[", origin.name(vm.heap, vm.interns))?;
+        write!(f, "{}[", Type::from(origin).name(vm.heap, vm.interns))?;
         let count = args.get(vm.heap).as_slice().len();
         if count == 0 {
             f.write_str("()")?;
@@ -224,7 +228,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             defer_drop!(value, vm);
             return vm.call_function(value, args);
         }
-        let origin = self.get(vm.heap).origin;
+        let origin = Type::from(self.get(vm.heap).origin);
         match attr {
             EitherStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm),
             // Classmethod names are all interned, so a heap string never names one.
@@ -262,7 +266,7 @@ pub(crate) fn repr_type_arg(
 ) -> RunResult<()> {
     match item {
         Value::Ellipsis => Ok(f.write_str("...")?),
-        Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(&ty.name(vm.heap, vm.interns))?),
+        Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(&Type::from(*ty).name(vm.heap, vm.interns))?),
         Value::Builtin(Builtins::ExcType(exc_type)) => Ok(f.write_str(exc_type.into())?),
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(f.write_str("type")?),
         Value::Ref(id) => match vm.heap.get(*id) {
@@ -272,5 +276,38 @@ pub(crate) fn repr_type_arg(
             _ => item.py_repr_fmt(f, vm, heap_ids),
         },
         _ => item.py_repr_fmt(f, vm, heap_ids),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Serialize;
+
+    use super::GenericAlias;
+    use crate::{
+        types::{BuiltinType, Type},
+        value::Value,
+    };
+
+    #[test]
+    fn legacy_origin_dump_loads_unchanged() {
+        #[derive(Serialize)]
+        struct LegacyAlias {
+            origin: Type,
+            args: Value,
+        }
+
+        // Include a type after Instance, where the two enums' indices differ.
+        for origin in [Type::List, Type::ItertoolsChain] {
+            let legacy = LegacyAlias {
+                origin,
+                args: Value::None,
+            };
+            let bytes = minicbor_serde::to_vec(&legacy).unwrap();
+            let alias: GenericAlias = minicbor_serde::from_slice(&bytes).unwrap();
+
+            assert_eq!(alias.origin, BuiltinType::try_from(origin).unwrap());
+            assert_eq!(minicbor_serde::to_vec(&alias).unwrap(), bytes);
+        }
     }
 }
