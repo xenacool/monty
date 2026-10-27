@@ -93,8 +93,14 @@ async fn session_state_persists_across_feeds() {
     let pool = Pool::new(PoolConfig::in_process()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
 
-    session.feed("x = 10", vec![], vec![], false, &mut no_print).await.unwrap();
-    session.feed("y = 20", vec![], vec![], false, &mut no_print).await.unwrap();
+    session
+        .feed("x = 10", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    session
+        .feed("y = 20", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
 
     let event = session
         .feed("x + y", vec![], vec![], false, &mut no_print)
@@ -156,10 +162,7 @@ async fn worker_returned_to_pool() {
 
     {
         let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-        session
-            .feed("42", vec![], vec![], false, &mut no_print)
-            .await
-            .unwrap();
+        session.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
         session.finish().await.unwrap();
     }
 
@@ -167,14 +170,10 @@ async fn worker_returned_to_pool() {
 
     // Reuse the same worker
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let event = session
-        .feed("100", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
+    let event = session.feed("100", vec![], vec![], false, &mut no_print).await.unwrap();
     assert_eq!(expect_complete(event), MontyObject::int(100));
     session.finish().await.unwrap();
 }
-
 
 /// Multiple workers can serve requests concurrently without interference.
 #[tokio::test(flavor = "multi_thread")]

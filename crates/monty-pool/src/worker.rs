@@ -19,10 +19,11 @@
 //! is cancel-safe.
 
 use std::{
-    env,
+    env, panic,
     path::PathBuf,
     process::{ExitStatus, Stdio},
-    sync::Once,
+    sync::{Once, mpsc as mpsc_sync},
+    thread,
     time::Duration,
 };
 
@@ -30,7 +31,9 @@ use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_into, encode_to_capped_vec, pb};
+use monty_proto::{
+    FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_into, encode_to_capped_vec, pb, worker::EventSink,
+};
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -93,9 +96,9 @@ enum WorkerKind {
 #[cfg(feature = "in-process")]
 struct ThreadWorker {
     /// `None` after teardown; dropping it ends the worker thread's loop.
-    requests: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    requests: Option<mpsc_sync::Sender<Vec<u8>>>,
     events: mpsc::UnboundedReceiver<Vec<u8>>,
-    thread: std::thread::JoinHandle<()>,
+    thread: thread::JoinHandle<()>,
 }
 
 /// Native stack for a worker thread (the same budget as the subprocess child).
@@ -107,7 +110,7 @@ const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 struct ThreadSink(mpsc::UnboundedSender<Vec<u8>>);
 
 #[cfg(feature = "in-process")]
-impl monty_proto::worker::EventSink for ThreadSink {
+impl EventSink for ThreadSink {
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
         let body = encode_to_capped_vec(event)?;
         self.0.send(body).map_err(|_| FrameError::Truncated)
@@ -117,15 +120,49 @@ impl monty_proto::worker::EventSink for ThreadSink {
 /// The worker thread's loop: one request frame in, its events out, until the
 /// pool drops its sender, a `Shutdown`, or a fatal error. A panic is reported
 /// as a `FatalError` event rather than unwinding into the host.
+///
+/// With the `arena` feature and a configured memory limit, each request runs
+/// inside a bump arena with a hard ceiling. The arena's allocation limit is
+/// enforced by bumpalo at the allocator level — exceeding it panics, which is
+/// caught here and reported as a `FatalError` — the session dies, the host
+/// survives.
 #[cfg(feature = "in-process")]
-fn serve_in_process(requests: std::sync::mpsc::Receiver<Vec<u8>>, events: mpsc::UnboundedSender<Vec<u8>>) {
-    use monty_proto::worker::{Child, EventSink, HandleOutcome, dispatch_into, fatal_error_event};
+#[expect(clippy::needless_pass_by_value, reason = "Receiver is consumed by recv() loop")]
+fn serve_in_process(
+    requests: mpsc_sync::Receiver<Vec<u8>>,
+    events: mpsc::UnboundedSender<Vec<u8>>,
+    arena_limit: Option<usize>,
+) {
+    #[cfg(feature = "arena")]
+    use monty_alloc::arena::{Arena, ThreadLocalArena};
+    use monty_proto::worker::{Child, HandleOutcome, dispatch_into, fatal_error_event};
     let mut child = Child::default();
     let mut sink = ThreadSink(events);
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         while let Ok(frame) = requests.recv() {
-            if dispatch_into(&mut child, &frame, &mut sink) != HandleOutcome::Continue {
-                break;
+            // With the arena feature, each request runs inside a bump arena
+            // with a hard ceiling. The allocation limit is enforced by bumpalo
+            // at the allocator level — exceeding it panics, which the outer
+            // catch_unwind catches as a FatalError.
+            #[cfg(feature = "arena")]
+            {
+                let should_continue = if let Some(limit) = arena_limit {
+                    let arena = Arena::new(Some(limit));
+                    ThreadLocalArena::with_arena(&arena, || {
+                        dispatch_into(&mut child, &frame, &mut sink) == HandleOutcome::Continue
+                    })
+                } else {
+                    dispatch_into(&mut child, &frame, &mut sink) == HandleOutcome::Continue
+                };
+                if !should_continue {
+                    break;
+                }
+            }
+            #[cfg(not(feature = "arena"))]
+            {
+                if dispatch_into(&mut child, &frame, &mut sink) != monty_proto::worker::HandleOutcome::Continue {
+                    break;
+                }
             }
         }
     }));
@@ -209,7 +246,13 @@ impl Worker {
         let worker = match &config.transport {
             MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
             #[cfg(feature = "in-process")]
-            MontyTransport::InProcess => Self::in_process(),
+            MontyTransport::InProcess => {
+                #[cfg(feature = "arena")]
+                let limit = config.arena_memory_limit;
+                #[cfg(not(feature = "arena"))]
+                let limit = None;
+                Self::in_process(limit)
+            }
             // Bound the dial by `request_timeout` (see `websocket`); a missing
             // one falls back to a generous fixed budget.
             MontyTransport::Websocket(url) => {
@@ -338,14 +381,15 @@ impl Worker {
     }
 
     /// Starts a worker thread hosting a protocol child in this process.
+    /// `arena_limit` sets the per-request memory ceiling when the `arena` feature is enabled.
     #[cfg(feature = "in-process")]
-    fn in_process() -> Result<Self, PoolError> {
-        let (request_tx, request_rx) = std::sync::mpsc::channel();
+    fn in_process(arena_limit: Option<usize>) -> Result<Self, PoolError> {
+        let (request_tx, request_rx) = mpsc_sync::channel();
         let (event_tx, events) = mpsc::unbounded_channel();
-        let thread = std::thread::Builder::new()
+        let thread = thread::Builder::new()
             .name("monty-worker".to_owned())
             .stack_size(WORKER_STACK_SIZE)
-            .spawn(move || serve_in_process(request_rx, event_tx))
+            .spawn(move || serve_in_process(request_rx, event_tx, arena_limit))
             .map_err(|err| PoolError::Spawn(format!("in-process worker thread: {err}")))?;
         Ok(Self {
             id: 0,

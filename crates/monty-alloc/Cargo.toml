@@ -6,7 +6,7 @@ license = { workspace = true }
 rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
-description = "Global allocator enforcing a Monty worker's hard memory ceiling."
+description = "Memory allocators for Monty workers: global allocator and per-session arena."
 keywords = { workspace = true }
 categories = { workspace = true }
 homepage = { workspace = true }
@@ -17,6 +17,7 @@ name = "monty_alloc"
 
 [dependencies]
 monty-types = { workspace = true }
+bumpalo = { workspace = true, optional = true }
 
 [features]
 # Report a breach by exiting with `monty_types::OOM_EXIT_CODE` rather than
@@ -24,6 +25,16 @@ monty-types = { workspace = true }
 # it (the subprocess pool); without it a breach aborts, which is all a wasm
 # module can do — see the crate docs.
 exit-code = []
+# Per-session bump arena that enforces a memory limit without a global allocator.
+# Designed for platforms that cannot spawn subprocesses (iOS, Android, game
+# cartridges): each session gets its own arena with a hard ceiling; exceeding
+# it panics, which the in-process worker thread catches as a FatalError.
+arena = ["dep:bumpalo"]
+# When enabled, panics if ThreadLocalArena is installed as the global allocator
+# but no arena is active on the current thread (i.e. `with_arena` was not called
+# or the host forgot to install it). Without this flag, the first fallback use
+# emits a one-time warning and falls through to the system allocator.
+require-tla = ["arena"]
 
 [lints]
 workspace = true

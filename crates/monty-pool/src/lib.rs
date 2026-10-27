@@ -117,6 +117,14 @@ pub struct PoolConfig {
     /// pools that record into the same host meter.
     #[cfg(feature = "telemetry")]
     pub metrics: Option<Metrics>,
+    /// Hard memory limit in bytes for each in-process worker arena.
+    ///
+    /// Only effective with the `arena` feature and [`MontyTransport::InProcess`].
+    /// When a worker exceeds this limit, it panics and is reported as a
+    /// `FatalError` — the session dies but the host process survives.
+    /// `None` disables the arena memory limit (default).
+    #[cfg(feature = "arena")]
+    pub arena_memory_limit: Option<usize>,
 }
 
 impl PoolConfig {
@@ -138,6 +146,7 @@ impl PoolConfig {
     /// Creates an in-process (thread) transport config with the same defaults
     /// as [`Self::subprocess`].
     #[cfg(feature = "in-process")]
+    #[must_use]
     pub fn in_process() -> Self {
         Self::with_transport(MontyTransport::InProcess)
     }
@@ -156,6 +165,8 @@ impl PoolConfig {
             auto_resume: true,
             #[cfg(feature = "telemetry")]
             metrics: None,
+            #[cfg(feature = "arena")]
+            arena_memory_limit: None,
         }
     }
 }

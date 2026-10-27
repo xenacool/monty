@@ -125,7 +125,7 @@ impl Pool {
     /// `options.telemetry`) while below `max_processes`, and otherwise waits
     /// up to `checkout_timeout` (forever when `None`) before failing with
     /// [`PoolError::Exhausted`].
-    pub async fn checkout_with(&self, repl: &ReplConfig, mut options: CheckoutOptions) -> Result<Checkout, PoolError> {
+    pub async fn checkout_with(&self, repl: &ReplConfig, options: CheckoutOptions) -> Result<Checkout, PoolError> {
         // ahead of the caller's headers, which stay last-wins
         #[cfg(feature = "telemetry")]
         if let Some(telemetry) = &options.telemetry {
@@ -328,6 +328,7 @@ impl PoolInner {
     /// Counts one worker leaving the pool. Every path that drops a worker
     /// records here or in [`crate::checkout`], so the reasons add up to the
     /// pool's whole turnover.
+    #[expect(clippy::unused_self, reason = "self used only with telemetry feature")]
     pub(crate) fn count_termination(&self, reason: &'static str) {
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {
@@ -341,6 +342,7 @@ impl PoolInner {
     ///
     /// Call with the pool lock released to keep telemetry outside pool
     /// synchronization. Recording only updates Rust SDK aggregates.
+    #[expect(clippy::unused_self, reason = "self used only with telemetry feature")]
     pub(crate) fn record_worker_delta(&self, live: i64, idle: i64) {
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {

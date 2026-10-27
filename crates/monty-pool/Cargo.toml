@@ -19,6 +19,11 @@ name = "monty_pool"
 # Hosts workers on threads inside this process instead of subprocesses (for
 # platforms that cannot spawn processes, such as iOS and Android apps).
 in-process = ["monty-proto/worker"]
+# Per-session memory isolation for in-process workers: each worker thread gets
+# a bump arena with a hard memory ceiling. When exceeded, the worker panics and
+# is caught as a FatalError — the session dies, the host survives. Requires
+# `in-process`. Designed for game cartridges, iOS, Android.
+arena = ["in-process", "dep:monty-alloc"]
 telemetry = [
     "dep:logfire",
     "dep:num-traits",
@@ -39,6 +44,8 @@ telemetry-adapter = ["telemetry"]
 monty-types = { workspace = true }
 monty-fs = { workspace = true }
 monty-proto = { workspace = true }
+# Arena allocator for in-process memory isolation (optional, enabled by `arena` feature).
+monty-alloc = { workspace = true, features = ["arena"], optional = true }
 # The pool is async end-to-end: workers are tokio child processes (or WebSocket
 # connections) read via cancel-safe in-worker frame state, and turn deadlines
 # are tokio timers. (rt-multi-thread is needed for `block_in_place` in

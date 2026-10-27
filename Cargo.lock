@@ -2548,6 +2548,7 @@ dependencies = [
 name = "monty-alloc"
 version = "1.4.0"
 dependencies = [
+ "bumpalo",
  "monty-types",
 ]
 
@@ -2673,6 +2674,7 @@ dependencies = [
  "futures-util",
  "insta",
  "logfire",
+ "monty-alloc",
  "monty-fs",
  "monty-proto",
  "monty-types",

@@ -166,6 +166,10 @@ logfire = { version = "0.12", default-features = false }
 # Canonical OTLP batches cross the Python and Node extension boundaries after
 # Rust's metrics SDK has aggregated them.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics"] }
+# Bump allocation arena for per-session memory isolation without a global
+# allocator (monty-alloc `arena` feature). Used on platforms that cannot spawn
+# subprocesses: iOS, Android, game cartridges.
+bumpalo = "3.17"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
